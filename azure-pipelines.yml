@@ -1,76 +1,118 @@
+
 trigger:
-  - main
-  - feature/*
-pool:russian_6000
+  branches:
+    include:
+      - main
+      - feature/*
+
+pool:
+  name: russian_6000
+
 stages:
-  - stage: tfsec
-    displayName: tfsec scan
-    jobs:
-      - job: tfsec
-        displayName: tfsec scan
-        steps:
+
+# Stage 1: tfsec security scan
+- stage: tfsec
+  displayName: tfsec Security Scan
+  jobs:
+    - job: tfsec_scan
+      steps:
         - task: PowerShell@2
+          displayName: Run tfsec
           inputs:
-            targetType: 'inline'
-            script: 'tfsec .'
-stages:
-  - stage: tflint
-    displayName: tflint scan
-    jobs:
-      - job: tflint
-        displayName: tflint scan
-        steps:
+            targetType: inline
+            script: |
+              tfsec .
+
+# Stage 2: tflint validation
+- stage: tflint
+  displayName: TFLint Scan
+  dependsOn: tfsec
+  jobs:
+    - job: tflint_scan
+      steps:
         - task: PowerShell@2
+          displayName: Run TFLint
           inputs:
-            targetType: 'inline'
-            script: 'tflint --recursive --force'
-stages:
-  - stage: plan
-    displayName: plan
-    jobs:
-      - job: plan
-        displayName: init
-        steps:
+            targetType: inline
+            script: |
+              tflint --recursive
+
+# Stage 3: Terraform Plan
+- stage: plan
+  displayName: Terraform Plan
+  dependsOn: tflint
+  jobs:
+    - job: terraform_plan
+      steps:
         - task: TerraformTask@5
+          displayName: Terraform Init
           inputs:
-            provider: 'azurerm'
-            command: 'init'
-            backendServiceArm: 'russian_SC'
-            backendAzureRmStorageAccountName: 'storagepipeline11'
-            backendAzureRmContainerName: 'mycontainer'
-            backendAzureRmKey: 'terraform.tfstate'
+            provider: azurerm
+            command: init
+            backendServiceArm: russian_SC
+            backendAzureRmStorageAccountName: storagepipeline11
+            backendAzureRmContainerName: mycontainer
+            backendAzureRmKey: terraform.tfstate
+
         - task: TerraformTask@5
+          displayName: Terraform Plan
           inputs:
-            provider: 'azurerm'
-            command: 'plan'
-            environmentServiceNameAzureRM: 'russian_SC'
-  - stage: approval
-    displayName: manual approval
-    pool: server
-    jobs:
-      - job: approval
-        displayName: manual approval
-        steps:
+            provider: azurerm
+            command: plan
+            environmentServiceNameAzureRM: russian_SC
+            commandOptions: '-out=tfplan'
+
+        - task: PublishPipelineArtifact@1
+          displayName: Publish Terraform Plan
+          inputs:
+            targetPath: '$(System.DefaultWorkingDirectory)/tfplan'
+            artifact: terraform-plan
+
+# Stage 4: Manual Approval
+- stage: approval
+  displayName: Manual Approval
+  dependsOn: plan
+  jobs:
+    - job: manual_approval
+      pool: server
+      timeoutInMinutes: 1440
+      steps:
         - task: ManualValidation@1
+          timeoutInMinutes: 1440
           inputs:
             notifyUsers: 'abc@gmail.com'
             approvers: 'rishi'
-  - stage: apply
-    displayName: apply
-    jobs:
-      - job: apply
-        displayName: apply
-        steps:
-        - task: TerraformTask@5
+            instructions: 'Please review Terraform plan before approving.'
+            onTimeout: reject
+
+# Stage 5: Terraform Apply
+- stage: apply
+  displayName: Terraform Apply
+  dependsOn: approval
+  condition: succeeded()
+  jobs:
+    - job: terraform_apply
+      steps:
+        - task: DownloadPipelineArtifact@2
+          displayName: Download Terraform Plan
           inputs:
-            provider: 'azurerm'
-            command: 'init'
-            backendServiceArm: 'russian_SC'
-            backendAzureRmStorageAccountName: 'storagepipeline11'
-            backendAzureRmContainerName: 'mycontainer'
-            backendAzureRmKey: 'terraform.tfstate'
+            artifact: terraform-plan
+            path: '$(System.DefaultWorkingDirectory)'
+
         - task: TerraformTask@5
+          displayName: Terraform Init
           inputs:
-            provider: 'azurerm'
-            command: 'apply'
-            environmentServiceNameAzureRM: 'russian_SC'
+            provider: azurerm
+            command: init
+            backendServiceArm: russian_SC
+            backendAzureRmStorageAccountName: storagepipeline11
+            backendAzureRmContainerName: mycontainer
+            backendAzureRmKey: terraform.tfstate
+
+        - task: TerraformTask@5
+          displayName: Terraform Apply
+          inputs:
+            provider: azurerm
+            command: apply
+            environmentServiceNameAzureRM: russian_SC
+            commandOptions: 'tfplan'
